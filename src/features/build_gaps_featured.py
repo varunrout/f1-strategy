@@ -50,16 +50,18 @@ def build_gaps_featured(session_id: Optional[int] = None,
         cursor = conn.cursor()
         
         if session_id:
-            session_filter = f"AND s.session_id = {session_id}"
+            cursor.execute("""
+                SELECT s.session_id 
+                FROM raw.sessions s
+                WHERE s.session_type IN ('R', 'S')
+                AND s.session_id = ?
+            """, (session_id,))
         else:
-            session_filter = ""
-        
-        cursor.execute(f"""
-            SELECT s.session_id 
-            FROM raw.sessions s
-            WHERE s.session_type IN ('R', 'S')  -- Race or Sprint
-            {session_filter}
-        """)
+            cursor.execute("""
+                SELECT s.session_id 
+                FROM raw.sessions s
+                WHERE s.session_type IN ('R', 'S')
+            """)
         sessions = [row[0] for row in cursor.fetchall()]
         
         total_rows = 0

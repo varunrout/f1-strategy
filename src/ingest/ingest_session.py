@@ -109,7 +109,7 @@ def ingest_laps(conn: sqlite3.Connection, session_id: int, session) -> int:
             int(lap.get('FreshTyre', 0)) if pd.notna(lap.get('FreshTyre')) else 0,
             str(lap.get('Team', '')) if pd.notna(lap.get('Team')) else None,
             str(lap.get('TrackStatus', '')) if pd.notna(lap.get('TrackStatus')) else None,
-            int(lap.get('PitInTime', False) is not None or lap.get('PitOutTime', False) is not None),
+            int(pd.notna(lap.get('PitInTime')) or pd.notna(lap.get('PitOutTime'))),
             int(lap.get('IsAccurate', 1)) if pd.notna(lap.get('IsAccurate')) else 1,
             float(lap.get('Position', 0)) if pd.notna(lap.get('Position')) else None,
             int(lap.get('Deleted', 0)) if pd.notna(lap.get('Deleted')) else 0,

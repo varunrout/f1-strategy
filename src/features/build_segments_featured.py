@@ -1,7 +1,7 @@
 """Build segments_featured table with telemetry-based segment analysis."""
 import sqlite3
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, NamedTuple
 import typer
 from rich.console import Console
 
@@ -21,11 +21,19 @@ FEATURES_DB_PATH = Path(__file__).parent.parent.parent / "data" / "features_core
 NUM_SEGMENTS = 20  # Divide each lap into N segments
 
 
+class TelemetryRow(NamedTuple):
+    """Telemetry data structure for better readability."""
+    speed: Optional[float]
+    throttle: Optional[float]
+    brake: Optional[float]
+    time: Optional[float]
+
+
 def aggregate_segment(telemetry_rows: List[Tuple]) -> Optional[Tuple]:
     """Aggregate telemetry data for a segment.
     
     Args:
-        telemetry_rows: List of telemetry rows for the segment
+        telemetry_rows: List of telemetry rows (speed, throttle, brake, time) for the segment
         
     Returns:
         Aggregated segment data tuple or None
@@ -33,6 +41,7 @@ def aggregate_segment(telemetry_rows: List[Tuple]) -> Optional[Tuple]:
     if not telemetry_rows:
         return None
     
+    # Extract fields with descriptive names
     speeds = [row[0] for row in telemetry_rows if row[0] is not None]
     throttles = [row[1] for row in telemetry_rows if row[1] is not None]
     brakes = [row[2] for row in telemetry_rows if row[2] is not None]
@@ -82,11 +91,9 @@ def build_segments_featured(session_id: Optional[int] = None,
         cursor = conn.cursor()
         
         if session_id:
-            session_filter = f"WHERE session_id = {session_id}"
+            cursor.execute("SELECT session_id FROM raw.sessions WHERE session_id = ?", (session_id,))
         else:
-            session_filter = ""
-        
-        cursor.execute(f"SELECT session_id FROM raw.sessions {session_filter}")
+            cursor.execute("SELECT session_id FROM raw.sessions")
         sessions = [row[0] for row in cursor.fetchall()]
         
         total_rows = 0
@@ -144,7 +151,17 @@ def build_segments_featured(session_id: Optional[int] = None,
                     continue
                 
                 min_dist, max_dist = dist_range
-                lap_distance = (max_dist - min_dist) / max(lap_number, 1)
+                
+                # Get total laps completed by this driver to calculate average lap distance
+                cursor.execute("""
+                    SELECT MAX(lap_number)
+                    FROM raw.laps_raw
+                    WHERE session_id = ? AND driver = ?
+                """, (sid, driver))
+                total_laps = cursor.fetchone()[0] or lap_number
+                
+                # Calculate average lap distance
+                lap_distance = (max_dist - min_dist) / max(total_laps, 1)
                 
                 # Approximate distance range for this lap
                 lap_start_dist = min_dist + (lap_number - 1) * lap_distance
@@ -199,13 +216,16 @@ def build_segments_featured(session_id: Optional[int] = None,
                     if not segment_telemetry:
                         continue
                     
-                    # Get distance boundaries
-                    distance_start_m = segment_telemetry[0][4] if segment_telemetry[0][4] else None
-                    distance_end_m = segment_telemetry[-1][4] if segment_telemetry[-1][4] else None
+                    # Get distance boundaries from first and last rows
+                    first_row = segment_telemetry[0]
+                    last_row = segment_telemetry[-1]
+                    distance_start_m = first_row[4] if len(first_row) > 4 and first_row[4] else None
+                    distance_end_m = last_row[4] if len(last_row) > 4 and last_row[4] else None
                     
-                    # Aggregate telemetry
-                    agg_data = aggregate_segment([(row[0], row[1], row[2], row[3]) 
-                                                  for row in segment_telemetry])
+                    # Extract telemetry fields: speed, throttle, brake, time
+                    # Indices: 0=speed, 1=throttle, 2=brake, 3=time, 4=distance
+                    telemetry_for_agg = [(row[0], row[1], row[2], row[3]) for row in segment_telemetry]
+                    agg_data = aggregate_segment(telemetry_for_agg)
                     
                     if agg_data is None:
                         continue

@@ -64,13 +64,11 @@ def build_laps_featured(session_id: Optional[int] = None,
     
     try:
         # Get list of sessions to process
-        if session_id:
-            session_filter = f"WHERE session_id = {session_id}"
-        else:
-            session_filter = ""
-        
         cursor = conn.cursor()
-        cursor.execute(f"SELECT session_id FROM raw.sessions {session_filter}")
+        if session_id:
+            cursor.execute("SELECT session_id FROM raw.sessions WHERE session_id = ?", (session_id,))
+        else:
+            cursor.execute("SELECT session_id FROM raw.sessions")
         sessions = [row[0] for row in cursor.fetchall()]
         
         total_rows = 0
