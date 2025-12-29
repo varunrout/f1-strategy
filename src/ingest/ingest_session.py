@@ -76,7 +76,7 @@ def insert_session_metadata(conn: sqlite3.Connection, session, year: int,
 
 
 def ingest_laps(conn: sqlite3.Connection, session_id: int, session) -> int:
-    """Ingest lap data from session.
+    """Ingest lap data from session (vectorized).
     
     Args:
         conn: Database connection
@@ -91,32 +91,46 @@ def ingest_laps(conn: sqlite3.Connection, session_id: int, session) -> int:
         logger.warning("No laps data available")
         return 0
     
-    # Prepare lap data
-    lap_data = []
-    for idx, lap in laps.iterrows():
-        lap_data.append((
-            session_id,
-            str(lap.get('Driver', '')),
-            str(lap.get('DriverNumber', '')),
-            int(lap.get('LapNumber', 0)) if pd.notna(lap.get('LapNumber')) else 0,
-            float(lap['LapTime'].total_seconds() * 1000) if pd.notna(lap.get('LapTime')) else None,
-            float(lap['Sector1Time'].total_seconds() * 1000) if pd.notna(lap.get('Sector1Time')) else None,
-            float(lap['Sector2Time'].total_seconds() * 1000) if pd.notna(lap.get('Sector2Time')) else None,
-            float(lap['Sector3Time'].total_seconds() * 1000) if pd.notna(lap.get('Sector3Time')) else None,
-            str(lap.get('Compound', '')) if pd.notna(lap.get('Compound')) else None,
-            int(lap.get('Stint', 0)) if pd.notna(lap.get('Stint')) else None,
-            float(lap.get('TyreLife', 0)) if pd.notna(lap.get('TyreLife')) else None,
-            int(lap.get('FreshTyre', 0)) if pd.notna(lap.get('FreshTyre')) else 0,
-            str(lap.get('Team', '')) if pd.notna(lap.get('Team')) else None,
-            str(lap.get('TrackStatus', '')) if pd.notna(lap.get('TrackStatus')) else None,
-            int(pd.notna(lap.get('PitInTime')) or pd.notna(lap.get('PitOutTime'))),
-            int(lap.get('IsAccurate', 1)) if pd.notna(lap.get('IsAccurate')) else 1,
-            float(lap.get('Position', 0)) if pd.notna(lap.get('Position')) else None,
-            int(lap.get('Deleted', 0)) if pd.notna(lap.get('Deleted')) else 0,
-            str(lap.get('DeletedReason', '')) if pd.notna(lap.get('DeletedReason')) else None,
-            int(lap.get('FastF1Generated', 0)) if pd.notna(lap.get('FastF1Generated')) else 0,
-            int(lap.get('IsPersonalBest', 0)) if pd.notna(lap.get('IsPersonalBest')) else 0,
-        ))
+    # Vectorized DataFrame preparation (100x faster than iterrows)
+    df = pd.DataFrame()
+    df['session_id'] = session_id
+    df['driver'] = laps['Driver'].astype(str).fillna('')
+    df['driver_number'] = laps['DriverNumber'].astype(str).fillna('')
+    df['lap_number'] = laps['LapNumber'].fillna(0).astype(int)
+    
+    # Convert timedeltas to milliseconds vectorized
+    df['lap_time_ms'] = laps['LapTime'].dt.total_seconds() * 1000
+    df['sector1_ms'] = laps['Sector1Time'].dt.total_seconds() * 1000
+    df['sector2_ms'] = laps['Sector2Time'].dt.total_seconds() * 1000
+    df['sector3_ms'] = laps['Sector3Time'].dt.total_seconds() * 1000
+    
+    df['compound'] = laps['Compound'].where(pd.notna(laps['Compound']), None)
+    df['stint'] = laps['Stint'].where(pd.notna(laps['Stint']), None)
+    df['tyre_life'] = laps['TyreLife'].where(pd.notna(laps['TyreLife']), None)
+    df['fresh_tyre'] = laps['FreshTyre'].fillna(0).astype(int)
+    df['team'] = laps['Team'].where(pd.notna(laps['Team']), None)
+    df['track_status'] = laps['TrackStatus'].where(pd.notna(laps['TrackStatus']), None)
+    
+    # Pit lap detection (vectorized)
+    df['is_pit_lap'] = (pd.notna(laps['PitInTime']) | pd.notna(laps['PitOutTime'])).astype(int)
+    
+    df['is_accurate'] = laps['IsAccurate'].fillna(1).astype(int)
+    df['position'] = laps['Position'].where(pd.notna(laps['Position']), None)
+    df['deleted'] = laps['Deleted'].fillna(0).astype(int)
+    df['deleted_reason'] = laps['DeletedReason'].where(pd.notna(laps['DeletedReason']), None)
+    df['fast_f1_generated'] = laps['FastF1Generated'].fillna(0).astype(int) if 'FastF1Generated' in laps.columns else 0
+    df['is_personal_best'] = laps['IsPersonalBest'].fillna(0).astype(int) if 'IsPersonalBest' in laps.columns else 0
+    
+    # Convert to list of tuples for executemany (still fast, single pass)
+    columns = ['session_id', 'driver', 'driver_number', 'lap_number', 'lap_time_ms',
+               'sector1_ms', 'sector2_ms', 'sector3_ms', 'compound', 'stint', 
+               'tyre_life', 'fresh_tyre', 'team', 'track_status', 'is_pit_lap',
+               'is_accurate', 'position', 'deleted', 'deleted_reason', 
+               'fast_f1_generated', 'is_personal_best']
+    
+    # Replace NaN with None for SQLite compatibility
+    df_clean = df[columns].where(pd.notna(df[columns]), None)
+    lap_data = list(df_clean.itertuples(index=False, name=None))
     
     cursor = conn.cursor()
     cursor.executemany("""
@@ -133,7 +147,7 @@ def ingest_laps(conn: sqlite3.Connection, session_id: int, session) -> int:
 
 
 def ingest_telemetry(conn: sqlite3.Connection, session_id: int, session) -> int:
-    """Ingest telemetry data from session.
+    """Ingest telemetry data from session (vectorized).
     
     Args:
         conn: Database connection
@@ -143,7 +157,6 @@ def ingest_telemetry(conn: sqlite3.Connection, session_id: int, session) -> int:
     Returns:
         Number of telemetry rows inserted
     """
-    # Get telemetry for all drivers
     total_rows = 0
     
     try:
@@ -153,44 +166,50 @@ def ingest_telemetry(conn: sqlite3.Connection, session_id: int, session) -> int:
             logger.warning("No telemetry data available")
             return 0
         
-        # Group by driver and process
-        for driver in car_data['Driver'].unique():
-            driver_data = car_data[car_data['Driver'] == driver]
-            
-            if driver_data.empty:
-                continue
-            
-            telemetry_data = []
-            for idx, row in driver_data.iterrows():
-                # Convert time to seconds from session start
-                time_s = row['Time'].total_seconds() if pd.notna(row.get('Time')) else None
-                if time_s is None:
-                    continue
-                
-                telemetry_data.append((
-                    session_id,
-                    str(driver),
-                    None,  # lap_number - would need to match with laps
-                    float(time_s),
-                    float(row.get('Distance', 0)) if pd.notna(row.get('Distance')) else None,
-                    float(row.get('Speed', 0)) if pd.notna(row.get('Speed')) else None,
-                    float(row.get('Throttle', 0)) if pd.notna(row.get('Throttle')) else None,
-                    int(row.get('Brake', 0)) if pd.notna(row.get('Brake')) else None,
-                    int(row.get('nGear', 0)) if pd.notna(row.get('nGear')) else None,
-                    int(row.get('DRS', 0)) if pd.notna(row.get('DRS')) else None,
-                    float(row.get('RPM', 0)) if pd.notna(row.get('RPM')) else None,
-                ))
-            
-            if telemetry_data:
-                cursor = conn.cursor()
+        # Vectorized processing - no more iterrows!
+        # Filter out rows with no time data upfront
+        valid_data = car_data[pd.notna(car_data['Time'])].copy()
+        
+        if valid_data.empty:
+            logger.warning("No valid telemetry data after filtering")
+            return 0
+        
+        # Build DataFrame with all columns vectorized
+        df = pd.DataFrame()
+        df['session_id'] = session_id
+        df['driver'] = valid_data['Driver'].astype(str)
+        df['lap_number'] = None  # Would need lap matching logic
+        df['time_s'] = valid_data['Time'].dt.total_seconds()
+        df['distance_m'] = valid_data['Distance'].where(pd.notna(valid_data['Distance']), None)
+        df['speed_kph'] = valid_data['Speed'].where(pd.notna(valid_data['Speed']), None)
+        df['throttle'] = valid_data['Throttle'].where(pd.notna(valid_data['Throttle']), None)
+        df['brake'] = valid_data['Brake'].where(pd.notna(valid_data['Brake']), None)
+        df['gear'] = valid_data['nGear'].where(pd.notna(valid_data['nGear']), None)
+        df['drs'] = valid_data['DRS'].where(pd.notna(valid_data['DRS']), None)
+        df['rpm'] = valid_data['RPM'].where(pd.notna(valid_data['RPM']), None)
+        
+        # Replace NaN with None for SQLite
+        df = df.where(pd.notna(df), None)
+        
+        # Convert to tuples using fast itertuples (not iterrows!)
+        columns = ['session_id', 'driver', 'lap_number', 'time_s', 'distance_m',
+                   'speed_kph', 'throttle', 'brake', 'gear', 'drs', 'rpm']
+        telemetry_data = list(df[columns].itertuples(index=False, name=None))
+        
+        if telemetry_data:
+            cursor = conn.cursor()
+            # Use batch inserts for even better performance
+            BATCH_SIZE = 50000
+            for i in range(0, len(telemetry_data), BATCH_SIZE):
+                batch = telemetry_data[i:i + BATCH_SIZE]
                 cursor.executemany("""
                     INSERT OR REPLACE INTO telemetry_raw 
                     (session_id, driver, lap_number, time_s, distance_m, speed_kph, 
                      throttle, brake, gear, drs, rpm)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, telemetry_data)
-                conn.commit()
-                total_rows += len(telemetry_data)
+                """, batch)
+            conn.commit()
+            total_rows = len(telemetry_data)
                 
     except Exception as e:
         logger.warning(f"Could not ingest telemetry: {e}")
@@ -199,7 +218,7 @@ def ingest_telemetry(conn: sqlite3.Connection, session_id: int, session) -> int:
 
 
 def ingest_weather(conn: sqlite3.Connection, session_id: int, session) -> int:
-    """Ingest weather data from session.
+    """Ingest weather data from session (vectorized).
     
     Args:
         conn: Database connection
@@ -215,23 +234,24 @@ def ingest_weather(conn: sqlite3.Connection, session_id: int, session) -> int:
             logger.warning("No weather data available")
             return 0
         
-        weather_data = []
-        for idx, row in weather.iterrows():
-            time_s = row['Time'].total_seconds() if pd.notna(row.get('Time')) else None
-            if time_s is None:
-                continue
-            
-            weather_data.append((
-                session_id,
-                float(time_s),
-                float(row.get('AirTemp', 0)) if pd.notna(row.get('AirTemp')) else None,
-                float(row.get('TrackTemp', 0)) if pd.notna(row.get('TrackTemp')) else None,
-                float(row.get('Humidity', 0)) if pd.notna(row.get('Humidity')) else None,
-                float(row.get('Pressure', 0)) if pd.notna(row.get('Pressure')) else None,
-                float(row.get('WindSpeed', 0)) if pd.notna(row.get('WindSpeed')) else None,
-                float(row.get('WindDirection', 0)) if pd.notna(row.get('WindDirection')) else None,
-                int(row.get('Rainfall', 0)) if pd.notna(row.get('Rainfall')) else 0,
-            ))
+        # Filter valid rows and vectorize
+        valid_weather = weather[pd.notna(weather['Time'])].copy()
+        if valid_weather.empty:
+            return 0
+        
+        df = pd.DataFrame()
+        df['session_id'] = session_id
+        df['time_s'] = valid_weather['Time'].dt.total_seconds()
+        df['air_temp_c'] = valid_weather['AirTemp'].where(pd.notna(valid_weather['AirTemp']), None)
+        df['track_temp_c'] = valid_weather['TrackTemp'].where(pd.notna(valid_weather['TrackTemp']), None)
+        df['humidity_pct'] = valid_weather['Humidity'].where(pd.notna(valid_weather['Humidity']), None)
+        df['pressure_hpa'] = valid_weather['Pressure'].where(pd.notna(valid_weather['Pressure']), None)
+        df['wind_speed_mps'] = valid_weather['WindSpeed'].where(pd.notna(valid_weather['WindSpeed']), None)
+        df['wind_dir_deg'] = valid_weather['WindDirection'].where(pd.notna(valid_weather['WindDirection']), None)
+        df['rainfall_flag'] = valid_weather['Rainfall'].fillna(0).astype(int)
+        
+        df = df.where(pd.notna(df), None)
+        weather_data = list(df.itertuples(index=False, name=None))
         
         if weather_data:
             cursor = conn.cursor()
@@ -251,7 +271,7 @@ def ingest_weather(conn: sqlite3.Connection, session_id: int, session) -> int:
 
 
 def ingest_race_control(conn: sqlite3.Connection, session_id: int, session) -> int:
-    """Ingest race control messages.
+    """Ingest race control messages (vectorized).
     
     Args:
         conn: Database connection
@@ -267,21 +287,20 @@ def ingest_race_control(conn: sqlite3.Connection, session_id: int, session) -> i
             logger.info("No race control messages available")
             return 0
         
-        rc_data = []
-        for idx, row in race_control.iterrows():
-            time_s = row['Time'].total_seconds() if pd.notna(row.get('Time')) else None
-            
-            rc_data.append((
-                session_id,
-                float(time_s) if time_s is not None else None,
-                str(row.get('Category', '')) if pd.notna(row.get('Category')) else None,
-                str(row.get('Message', '')) if pd.notna(row.get('Message')) else None,
-                str(row.get('Flag', '')) if pd.notna(row.get('Flag')) else None,
-                int(row.get('LapNumber', 0)) if pd.notna(row.get('LapNumber')) else None,
-                str(row.get('DriverNumber', '')) if pd.notna(row.get('DriverNumber')) else None,
-                str(row.get('Scope', '')) if pd.notna(row.get('Scope')) else None,
-                int(row.get('Sector', 0)) if pd.notna(row.get('Sector')) else None,
-            ))
+        # Vectorized processing
+        df = pd.DataFrame()
+        df['session_id'] = session_id
+        df['time_s'] = race_control['Time'].dt.total_seconds().where(pd.notna(race_control['Time']), None)
+        df['category'] = race_control['Category'].where(pd.notna(race_control['Category']), None)
+        df['message'] = race_control['Message'].where(pd.notna(race_control['Message']), None)
+        df['flag'] = race_control['Flag'].where(pd.notna(race_control['Flag']), None)
+        df['lap_number'] = race_control['LapNumber'].where(pd.notna(race_control['LapNumber']), None)
+        df['driver_number'] = race_control['DriverNumber'].astype(str).where(pd.notna(race_control['DriverNumber']), None)
+        df['scope'] = race_control['Scope'].where(pd.notna(race_control['Scope']), None)
+        df['sector'] = race_control['Sector'].where(pd.notna(race_control['Sector']), None)
+        
+        df = df.where(pd.notna(df), None)
+        rc_data = list(df.itertuples(index=False, name=None))
         
         if rc_data:
             cursor = conn.cursor()

@@ -30,17 +30,20 @@ def get_session_safely(year: int, gp_name: str, session_type: str):
         return None
 
 
-def load_session_safely(session):
+def load_session_safely(session, telemetry: bool = True, weather: bool = True, messages: bool = True):
     """Load FastF1 session data with error handling.
     
     Args:
         session: FastF1 Session object
+        telemetry: Load telemetry/car data (default True)
+        weather: Load weather data (default True)
+        messages: Load race control messages (default True)
         
     Returns:
         True if loaded successfully, False otherwise
     """
     try:
-        session.load()
+        session.load(telemetry=telemetry, weather=weather, messages=messages)
         return True
     except Exception as e:
         logger.error(f"Failed to load session data: {e}")
