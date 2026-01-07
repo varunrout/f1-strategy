@@ -43,36 +43,218 @@ def prepare_laps_df(session, session_id: int, year: int, gp_name: str, session_t
         logger.warning("No laps data available")
         return pd.DataFrame()
     
-    df = pd.DataFrame()
-    df['session_id'] = session_id
-    df['year'] = year
-    df['gp_name'] = gp_name
-    df['session_type'] = session_type
-    df['driver'] = laps['Driver'].astype(str).fillna('')
-    df['driver_number'] = laps['DriverNumber'].astype(str).fillna('')
-    df['lap_number'] = laps['LapNumber'].fillna(0).astype(int)
+    # Build DataFrame from laps first to establish row count
+    n_rows = len(laps)
+    df = pd.DataFrame({
+        'session_id': [session_id] * n_rows,  # Must broadcast to all rows
+        'year': [year] * n_rows,
+        'gp_name': [gp_name] * n_rows,
+        'session_type': [session_type] * n_rows,
+    })
+    df['driver'] = laps['Driver'].astype(str).fillna('').values
+    df['driver_number'] = laps['DriverNumber'].astype(str).fillna('').values
+    df['lap_number'] = laps['LapNumber'].fillna(0).astype(int).values
     
     # Convert timedeltas to milliseconds vectorized
-    df['lap_time_ms'] = laps['LapTime'].dt.total_seconds() * 1000
-    df['sector1_ms'] = laps['Sector1Time'].dt.total_seconds() * 1000
-    df['sector2_ms'] = laps['Sector2Time'].dt.total_seconds() * 1000
-    df['sector3_ms'] = laps['Sector3Time'].dt.total_seconds() * 1000
+    df['lap_time_ms'] = (laps['LapTime'].dt.total_seconds() * 1000).values
+    df['sector1_ms'] = (laps['Sector1Time'].dt.total_seconds() * 1000).values
+    df['sector2_ms'] = (laps['Sector2Time'].dt.total_seconds() * 1000).values
+    df['sector3_ms'] = (laps['Sector3Time'].dt.total_seconds() * 1000).values
     
-    df['compound'] = laps['Compound'].where(pd.notna(laps['Compound']), None)
-    df['stint'] = laps['Stint'].where(pd.notna(laps['Stint']), None)
-    df['tyre_life'] = laps['TyreLife'].where(pd.notna(laps['TyreLife']), None)
-    df['fresh_tyre'] = laps['FreshTyre'].fillna(0).astype(int)
-    df['team'] = laps['Team'].where(pd.notna(laps['Team']), None)
-    df['track_status'] = laps['TrackStatus'].where(pd.notna(laps['TrackStatus']), None)
-    df['is_pit_lap'] = (pd.notna(laps['PitInTime']) | pd.notna(laps['PitOutTime'])).astype(int)
-    df['is_accurate'] = laps['IsAccurate'].fillna(1).astype(int)
-    df['position'] = laps['Position'].where(pd.notna(laps['Position']), None)
-    df['deleted'] = laps['Deleted'].fillna(0).astype(int)
-    df['deleted_reason'] = laps['DeletedReason'].where(pd.notna(laps['DeletedReason']), None)
-    df['fast_f1_generated'] = laps['FastF1Generated'].fillna(0).astype(int) if 'FastF1Generated' in laps.columns else 0
+    df['compound'] = laps['Compound'].where(pd.notna(laps['Compound']), None).values
+    df['stint'] = laps['Stint'].where(pd.notna(laps['Stint']), None).values
+    df['tyre_life'] = laps['TyreLife'].where(pd.notna(laps['TyreLife']), None).values
+    df['fresh_tyre'] = laps['FreshTyre'].fillna(0).astype(int).values
+    df['team'] = laps['Team'].where(pd.notna(laps['Team']), None).values
+    df['track_status'] = laps['TrackStatus'].where(pd.notna(laps['TrackStatus']), None).values
+    df['is_pit_lap'] = (pd.notna(laps['PitInTime']) | pd.notna(laps['PitOutTime'])).astype(int).values
+    df['is_accurate'] = laps['IsAccurate'].fillna(1).astype(int).values
+    df['position'] = laps['Position'].where(pd.notna(laps['Position']), None).values
+    df['deleted'] = laps['Deleted'].fillna(0).astype(int).values
+    df['deleted_reason'] = laps['DeletedReason'].where(pd.notna(laps['DeletedReason']), None).values
+    df['fast_f1_generated'] = (laps['FastF1Generated'].fillna(0).astype(int).values if 'FastF1Generated' in laps.columns else 0)
     df['is_personal_best'] = laps['IsPersonalBest'].fillna(0).astype(int) if 'IsPersonalBest' in laps.columns else 0
     
     return df
+
+
+def prepare_positions_df(session, session_id: int, year: int, gp_name: str, session_type: str) -> pd.DataFrame:
+    """Prepare positions DataFrame from FastF1 session (X, Y, Z coordinates).
+    
+    FastF1's session.pos_data is a DICTIONARY keyed by driver number (as string),
+    where each value is a DataFrame with position data (X, Y, Z, Status, Time).
+    
+    Args:
+        session: FastF1 session object
+        session_id: Session ID
+        year: Season year
+        gp_name: Grand Prix name
+        session_type: Session type
+        
+    Returns:
+        Prepared DataFrame ready for storage with columns:
+        session_id, year, gp_name, session_type, driver_number, time_s, x, y, z, status
+    """
+    try:
+        pos_data = session.pos_data
+        
+        if pos_data is None:
+            logger.warning("No position data available (None)")
+            return pd.DataFrame()
+        
+        if not isinstance(pos_data, dict):
+            logger.warning(f"Unexpected pos_data type: {type(pos_data)}")
+            return pd.DataFrame()
+        
+        if len(pos_data) == 0:
+            logger.warning("No position data available (empty dict)")
+            return pd.DataFrame()
+        
+        all_driver_dfs = []
+        total_rows = 0
+        
+        for driver_num, driver_pos in pos_data.items():
+            if driver_pos is None or not isinstance(driver_pos, pd.DataFrame):
+                continue
+            if driver_pos.empty:
+                continue
+            
+            # Filter valid rows (with Time)
+            if 'Time' not in driver_pos.columns:
+                continue
+            
+            valid_data = driver_pos[pd.notna(driver_pos['Time'])].copy()
+            if valid_data.empty:
+                continue
+            
+            n_rows = len(valid_data)
+            
+            df = pd.DataFrame({
+                'session_id': [session_id] * n_rows,
+                'year': [year] * n_rows,
+                'gp_name': [gp_name] * n_rows,
+                'session_type': [session_type] * n_rows,
+                'driver_number': [driver_num] * n_rows,
+            })
+            
+            # Time column
+            if hasattr(valid_data['Time'].iloc[0], 'total_seconds'):
+                df['time_s'] = valid_data['Time'].dt.total_seconds().values
+            else:
+                df['time_s'] = valid_data['Time'].values
+            
+            # Position coordinates
+            df['x'] = valid_data['X'].values if 'X' in valid_data.columns else None
+            df['y'] = valid_data['Y'].values if 'Y' in valid_data.columns else None
+            df['z'] = valid_data['Z'].values if 'Z' in valid_data.columns else None
+            df['status'] = valid_data['Status'].values if 'Status' in valid_data.columns else None
+            
+            all_driver_dfs.append(df)
+            total_rows += n_rows
+        
+        if not all_driver_dfs:
+            logger.warning("No valid position data for any driver")
+            return pd.DataFrame()
+        
+        result = pd.concat(all_driver_dfs, ignore_index=True)
+        logger.info(f"Prepared {total_rows} position rows from {len(all_driver_dfs)} drivers")
+        return result
+        
+    except Exception as e:
+        logger.warning(f"Could not prepare positions: {e}")
+        import traceback
+        logger.debug(traceback.format_exc())
+        return pd.DataFrame()
+
+
+def prepare_circuit_info_df(session, session_id: int, year: int, gp_name: str, session_type: str) -> pd.DataFrame:
+    """Prepare circuit info DataFrame from FastF1 session (corners and track layout).
+    
+    Args:
+        session: FastF1 session object
+        session_id: Session ID
+        year: Season year
+        gp_name: Grand Prix name
+        session_type: Session type
+        
+    Returns:
+        Prepared DataFrame with corner locations (X, Y, Number, Angle, Distance)
+    """
+    try:
+        circuit_info = session.get_circuit_info()
+        if circuit_info is None:
+            logger.warning("No circuit info available")
+            return pd.DataFrame()
+        
+        corners = circuit_info.corners
+        if corners is None or corners.empty:
+            logger.warning("No corners data available")
+            return pd.DataFrame()
+        
+        n_rows = len(corners)
+        df = pd.DataFrame({
+            'session_id': [session_id] * n_rows,
+            'year': [year] * n_rows,
+            'gp_name': [gp_name] * n_rows,
+            'session_type': [session_type] * n_rows,
+            'corner_number': corners['Number'].values,
+            'x': corners['X'].values,
+            'y': corners['Y'].values,
+            'angle': corners['Angle'].values,
+            'distance': corners['Distance'].values,
+        })
+        
+        # Add rotation (track map rotation)
+        df['rotation'] = circuit_info.rotation
+        
+        logger.info(f"Prepared {n_rows} corner entries for circuit")
+        return df
+        
+    except Exception as e:
+        logger.warning(f"Could not prepare circuit info: {e}")
+        return pd.DataFrame()
+
+
+def prepare_results_df(session, session_id: int, year: int, gp_name: str, session_type: str) -> pd.DataFrame:
+    """Prepare session results DataFrame (driver/team mapping, grid, finish positions).
+    
+    Args:
+        session: FastF1 session object
+        session_id: Session ID
+        year: Season year
+        gp_name: Grand Prix name
+        session_type: Session type
+        
+    Returns:
+        Prepared DataFrame with driver info and results
+    """
+    try:
+        results = session.results
+        if results is None or results.empty:
+            logger.warning("No results data available")
+            return pd.DataFrame()
+        
+        n_rows = len(results)
+        df = pd.DataFrame({
+            'session_id': [session_id] * n_rows,
+            'year': [year] * n_rows,
+            'gp_name': [gp_name] * n_rows,
+            'session_type': [session_type] * n_rows,
+            'driver_number': results['DriverNumber'].astype(str).values,
+            'driver_abbrev': results['Abbreviation'].values if 'Abbreviation' in results.columns else None,
+            'team_name': results['TeamName'].values if 'TeamName' in results.columns else None,
+            'grid_position': results['GridPosition'].values if 'GridPosition' in results.columns else None,
+            'finish_position': results['Position'].values if 'Position' in results.columns else None,
+            'status': results['Status'].values if 'Status' in results.columns else None,
+            'points': results['Points'].values if 'Points' in results.columns else None,
+        })
+        
+        logger.info(f"Prepared {n_rows} results entries")
+        return df
+        
+    except Exception as e:
+        logger.warning(f"Could not prepare results: {e}")
+        return pd.DataFrame()
 
 
 def prepare_telemetry_df(session, session_id: int, year: int, gp_name: str, session_type: str) -> pd.DataFrame:
@@ -289,6 +471,9 @@ def ingest_session_parquet(
     telemetry_df = prepare_telemetry_df(session, session_id, year, gp_name, session_type)
     weather_df = prepare_weather_df(session, session_id, year, gp_name, session_type)
     rc_df = prepare_race_control_df(session, session_id, year, gp_name, session_type)
+    positions_df = prepare_positions_df(session, session_id, year, gp_name, session_type)
+    circuit_df = prepare_circuit_info_df(session, session_id, year, gp_name, session_type)
+    results_df = prepare_results_df(session, session_id, year, gp_name, session_type)
     
     # Write to Parquet Bronze layer
     counts = {}
@@ -308,6 +493,18 @@ def ingest_session_parquet(
     if not rc_df.empty:
         writer.write_bronze(rc_df, "race_control_raw", year, gp_name, session_type)
         counts['race_control'] = len(rc_df)
+    
+    if not positions_df.empty:
+        writer.write_bronze(positions_df, "positions_raw", year, gp_name, session_type)
+        counts['positions'] = len(positions_df)
+    
+    if not circuit_df.empty:
+        writer.write_bronze(circuit_df, "circuit_info", year, gp_name, session_type)
+        counts['circuit'] = len(circuit_df)
+    
+    if not results_df.empty:
+        writer.write_bronze(results_df, "results_raw", year, gp_name, session_type)
+        counts['results'] = len(results_df)
     
     # Optionally also write to SQLite
     if also_sqlite:

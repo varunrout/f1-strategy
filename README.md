@@ -400,6 +400,33 @@ Gaps between cars are computed using cumulative lap times and race positions:
 gap_to_ahead = current_driver_cumulative_time - ahead_driver_cumulative_time
 ```
 
+## 🧠 Train Tyre Degradation Model
+
+Train a supervised model to predict stint-level degradation rate (seconds per lap) from Silver-layer Domain 1 data.
+
+Prerequisites:
+- Build Domain 1 data so that `data/lake/silver/domain1/stints_degradation.parquet` exists (see domain1 ETL module).
+
+Commands:
+
+```bash
+# Show CLI options
+python -m src.modeling.train_degradation_model --help
+
+# Train with defaults (uses data/lake)
+python -m src.modeling.train_degradation_model train
+
+# Optional: specify explicit paths
+python -m src.modeling.train_degradation_model train \
+  --stints-path data/lake/silver/domain1/stints_degradation.parquet \
+  --cluster-labels-path data/clustering_labels.parquet
+```
+
+Outputs:
+- Models: `models/degradation/degradation_p50.joblib` (+ optional `degradation_p10.joblib`, `degradation_p90.joblib`)
+- Metrics: `models/degradation/metrics.json`
+```
+
 ## 🤝 Contributing
 
 Contributions welcome! Areas for enhancement:
