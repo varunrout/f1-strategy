@@ -184,7 +184,10 @@ def detect_proximity_events(
 
             for i, j in pairs:
                 dist = float(np.linalg.norm(coords[i] - coords[j]))
-                if coords[i][1] >= coords[j][1]:
+                # Use y-coordinate as a proxy for track progression (higher y = further ahead).
+                # This is a simplification; for production use track distance / lap progress.
+                y_i, y_j = coords[i][1], coords[j][1]
+                if y_i >= y_j:
                     ahead_idx, behind_idx = i, j
                 else:
                     ahead_idx, behind_idx = j, i

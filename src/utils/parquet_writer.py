@@ -49,11 +49,10 @@ class ParquetWriter:
                     gp_name: Optional[str] = None, session_type: Optional[str] = None) -> pd.DataFrame:
         """Read from Bronze layer with optional filters."""
         table_path = self.base_path / "bronze" / table
-        if year and gp_name and session_type:
-            gp_safe = gp_name.replace(" ", "_").replace("/", "_")
+        gp_safe = gp_name.replace(" ", "_").replace("/", "_") if gp_name else None
+        if year and gp_safe and session_type:
             pattern = f"year={year}/gp={gp_safe}/session={session_type}/*.parquet"
-        elif year and gp_name:
-            gp_safe = gp_name.replace(" ", "_").replace("/", "_")
+        elif year and gp_safe:
             pattern = f"year={year}/gp={gp_safe}/**/*.parquet"
         elif year:
             pattern = f"year={year}/**/*.parquet"

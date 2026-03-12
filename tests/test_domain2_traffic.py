@@ -225,7 +225,7 @@ def test_detect_overtakes_returns_dataframe(sample_laps):
 
 
 def test_detect_overtakes_finds_position_gain(sample_laps):
-    """HAM goes from position 2 → 2 → 1, so lap 3 is an overtake."""
+    """HAM is in position 2 on laps 1 and 2, then moves to position 1 on lap 3 — a real overtake."""
     result = detect_overtakes(sample_laps)
     ham_overtakes = result[result["driver"] == "HAM"]
     assert len(ham_overtakes) >= 1
