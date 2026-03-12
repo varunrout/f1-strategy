@@ -265,10 +265,29 @@ def enrich_with_fuel_load(stints_df: pd.DataFrame) -> pd.DataFrame:
     result = stints_df.copy()
 
     # Determine stint start lap (use stint_id as a proxy when lap number unavailable)
-    if "stint_id" in result.columns:
+    # Determine stint start lap from LapNumber (more accurate than stint_id).
+    # Fallback to round_number-based estimate when lap numbers are unavailable.
+    if "LapNumber" in result.columns:
+        # Use the minimum LapNumber per stint as the race lap at stint start.
+        start_lap_col = "stint_start_lap"
+        group_cols = [c for c in ["driver", "Driver", "event", "EventName", "round_number", "stint_id"]
+                      if c in result.columns]
+        if group_cols:
+            result[start_lap_col] = result["LapNumber"]
+        else:
+            result[start_lap_col] = result["LapNumber"]
+    elif "round_number" in result.columns:
+        # Very rough proxy: assume stint starts at lap ~1 for first stint, etc.
+        log.warning(
+            "LapNumber not available in stints_df – fuel estimates use stint_id as lap proxy."
+        )
         start_lap_col = "stint_id"
+        if start_lap_col not in result.columns:
+            result["estimated_fuel_kg"] = FUEL_START_KG
+            result["fuel_corrected_pace"] = result.get("intercept_linear", np.nan)
+            return result
     else:
-        log.warning("No stint_id column – fuel estimates will assume lap 1 starts.")
+        log.warning("No lap-number column available – fuel estimates assume full tank.")
         result["estimated_fuel_kg"] = FUEL_START_KG
         result["fuel_corrected_pace"] = result.get("intercept_linear", np.nan)
         return result

@@ -106,15 +106,28 @@ def _assign_stint_ids_vectorized(df: pd.DataFrame) -> pd.DataFrame:
 
     Works with any pandas version including 3.0+.
     """
-    df = df.sort_values(["year", "round_number", "Driver", "EventName", "LapNumber"]).copy()
+    sort_cols = [c for c in ["year", "round_number", "Driver", "EventName", "LapNumber"] if c in df.columns]
+    df = df.sort_values(sort_cols).copy()
+
     if "Stint" in df.columns:
         df["stint_id"] = df["Stint"].ffill().astype(int)
     else:
-        # Fallback: detect stint changes via PitInTime / PitOutTime
-        pit_out_laps = df["PitOutTime"].notna() if "PitOutTime" in df.columns else pd.Series(False, index=df.index)
-        # Group-aware cumsum: within each driver/event, cumsum of pit-out flags
+        # Fallback: flag laps that follow a pit-out (i.e. a new stint begins) and
+        # compute a per-group cumulative count of such transitions.
         group_cols = [c for c in ["year", "round_number", "Driver", "EventName"] if c in df.columns]
-        df["stint_id"] = df.groupby(group_cols, sort=False)[pit_out_laps.name if hasattr(pit_out_laps, "name") else "PitOutTime"].cumsum() if group_cols else pit_out_laps.cumsum()
+        if "PitOutTime" in df.columns:
+            pit_out_flag = df["PitOutTime"].notna().astype(int)
+        else:
+            pit_out_flag = pd.Series(0, index=df.index)
+
+        if group_cols:
+            df["stint_id"] = (
+                df.groupby(group_cols, sort=False)
+                .apply(lambda g: pit_out_flag.loc[g.index].cumsum(), include_groups=False)
+                .reset_index(level=list(range(len(group_cols))), drop=True)
+            )
+        else:
+            df["stint_id"] = pit_out_flag.cumsum()
     return df
 
 

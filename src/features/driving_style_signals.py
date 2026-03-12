@@ -193,7 +193,9 @@ def compute_tyre_exploitation_score(stints_df: pd.DataFrame) -> pd.DataFrame:
         if median == 0:
             continue
         exploit = (median - early) / median  # positive → early laps faster
-        key_dict = dict(zip(stint_group, keys if isinstance(keys, tuple) else (keys,)))
+        # Normalise keys to a tuple regardless of the number of group columns
+        keys_tuple = keys if isinstance(keys, tuple) else (keys,)
+        key_dict = dict(zip(stint_group, keys_tuple))
         scores.append({
             "driver": key_dict.get(driver_col),
             "event": key_dict.get(event_col),

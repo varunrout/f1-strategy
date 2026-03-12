@@ -202,11 +202,9 @@ def evaluate_model(
     metrics: dict[str, float] = {"mae": mae, "rmse": rmse}
 
     if quantile is not None:
-        if quantile <= 0.5:
-            # Coverage: fraction of actuals below the predicted quantile
-            coverage = float(np.mean(y_test.to_numpy() <= y_pred))
-        else:
-            coverage = float(np.mean(y_test.to_numpy() <= y_pred))
+        # Coverage: fraction of actuals that fall at or below the predicted quantile.
+        # For a well-calibrated Q-alpha model this should equal alpha.
+        coverage = float(np.mean(y_test.to_numpy() <= y_pred))
         metrics["coverage"] = coverage
         metrics["target_coverage"] = quantile
 
