@@ -1,24 +1,34 @@
-# F1 Strategy: FastF1 → SQLite Data Pipeline
+# F1 Strategy: Tyre Degradation Analytics Pipeline
 
-A robust, script-driven data ingestion and feature engineering pipeline for Formula 1 analytics using FastF1 and SQLite.
+A data pipeline for Formula 1 analytics using FastF1, Parquet, and DuckDB — from raw telemetry ingestion to XGBoost-based tyre degradation prediction.
 
 ## 🏎️ Overview
 
-This project provides a complete data pipeline for F1 analytics:
+This project provides an end-to-end F1 analytics pipeline:
 
 1. **Data Ingestion**: Downloads F1 timing and telemetry data using FastF1
-2. **Layered Storage**: Stores data in SQLite databases with bronze/silver architecture
-3. **Feature Engineering**: Derives analytics-ready features from raw data
+2. **Layered Storage**: Stores data in Parquet files with bronze/silver architecture
+3. **Feature Engineering**: Derives analytics-ready features using DuckDB SQL
+4. **Domain Analysis**: Tyre degradation curve fitting and clean-air stint extraction
+5. **ML Modeling**: XGBoost degradation predictions with quantile uncertainty
 
 ### Architecture
 
 ```
-data/
-├── raw.db              # Bronze layer: Raw FastF1 data
-├── features_core.db    # Silver layer: Core reusable features
-├── features_tyre.db    # (Reserved for domain-specific features)
-├── features_traffic.db # (Reserved for domain-specific features)
-└── features_xt.db      # (Reserved for domain-specific features)
+data/lake/
+├── bronze/              # Raw FastF1 data (Parquet, hive-partitioned)
+│   ├── laps_raw/
+│   ├── telemetry_raw/
+│   ├── weather_raw/
+│   ├── positions_raw/
+│   ├── race_control_raw/
+│   ├── circuit_info/
+│   └── results_raw/
+└── silver/              # Derived features
+    ├── laps_featured/
+    ├── gaps_featured/
+    ├── segments_featured/
+    └── domain1/         # Tyre degradation analysis
 ```
 
 ## 📦 Installation
@@ -38,7 +48,7 @@ cd f1-strategy
 # Install dependencies
 pip install -r requirements.txt
 
-# Or with pip in development mode
+# Or install in development mode
 pip install -e .
 ```
 
@@ -48,400 +58,248 @@ pip install -e .
 
 ```bash
 # Ingest the 2023 Monaco Grand Prix race
-python -m src.ingest.ingest_session --year 2023 --gp "Monaco" --session R
+python -m src.ingest.ingest_parquet --year 2023 --gp "Monaco" --session R
 
 # Ingest qualifying session
-python -m src.ingest.ingest_session --year 2023 --gp "Monaco" --session Q
+python -m src.ingest.ingest_parquet --year 2023 --gp "Monaco" --session Q
 ```
 
-### 2. Ingest an Entire Season
+### 2. Batch Ingest a Season
 
 ```bash
-# Ingest all races and qualifying sessions from 2023
-python -m src.ingest.ingest_season --year 2023 --sessions "Q,R"
+# Ingest all 2023 races (background, 4 parallel workers)
+python -m src.ingest.background_runner start --year 2023 --sessions "Q,R"
 
-# Ingest all session types (FP1, FP2, FP3, Q, R) for 2023
-python -m src.ingest.ingest_season --year 2023
+# Ingest specific GPs in foreground
+python -m src.ingest.background_runner start --year 2023 --gps "Monza,Silverstone,Spa" --foreground
 
-# Ingest specific GPs only
-python -m src.ingest.ingest_season --year 2023 --gps "Monza,Silverstone,Spa"
+# Check status of background jobs
+python -m src.ingest.background_runner status
 ```
 
 ### 3. Build Feature Tables
 
-After ingesting raw data, build derived feature tables:
+After ingesting raw data, build derived feature tables using DuckDB:
 
 ```bash
-# Build laps with features (tyre age, fuel proxy, track status, etc.)
-python -m src.features.build_laps_featured
+# Build all features at once (laps, gaps, segments)
+python -m src.features.duckdb_features all
 
-# Build gap analysis (gaps to cars ahead/behind, DRS range, clean air)
-python -m src.features.build_gaps_featured
-
-# Build segment analysis (telemetry aggregated by track segments)
-python -m src.features.build_segments_featured
+# Or build individually
+python -m src.features.duckdb_features laps
+python -m src.features.duckdb_features gaps
+python -m src.features.duckdb_features segments
 ```
 
-## 📊 Database Schema
+### 4. Build Domain 1: Tyre Degradation
 
-### Raw Database (`raw.db`)
+```bash
+# Extract clean-air stints and fit degradation curves
+python -m src.features.domain1_degradation build
 
-**Bronze layer** containing raw FastF1 data:
+# Show stats about existing degradation data
+python -m src.features.domain1_degradation stats
+```
 
-- **sessions**: Session metadata (year, GP, track, session type)
-- **laps_raw**: Lap-level timing data (lap times, sectors, compounds, stints)
-- **telemetry_raw**: High-frequency telemetry (speed, throttle, brake, gear, DRS)
-- **positions_raw**: Car position data (x, y, z coordinates)
-- **weather_raw**: Weather time series (temperature, humidity, wind, rainfall)
-- **race_control_raw**: Race control messages and flags
-- **ingestion_log**: Audit trail of ingestion operations
+## 📊 Data Schema
 
-### Features Database (`features_core.db`)
+### Bronze Layer (`data/lake/bronze/`)
 
-**Silver layer** with enriched, analytics-ready features:
+Raw FastF1 data stored as hive-partitioned Parquet files (`year=YYYY/gp=GP_Name/session=R/`):
 
-- **laps_featured**: Enhanced lap data with derived features
-  - Tyre age calculation
-  - Fuel proxy (race completion fraction)
-  - Track status categorization (GREEN, YELLOW, SC, VSC, RED)
-  - In-lap/out-lap identification
-  - Weather data joined by time
-  
-- **gaps_featured**: Gap analysis between cars
-  - Gap to car ahead/behind (seconds)
-  - Clean air flag (gap > 2.5s)
-  - DRS range flag (gap < 1.0s)
-  
-- **segments_featured**: Track segment-level telemetry analysis
-  - Speed statistics per segment (mean, max, min, entry, exit)
-  - Throttle and brake usage
-  - Time in segment
-  - Enriched with tyre and fuel data
+| Table | Contents |
+|-------|----------|
+| `laps_raw` | Lap-level timing data (lap times, sectors, compounds, stints) |
+| `telemetry_raw` | High-frequency telemetry (speed, throttle, brake, gear, DRS) |
+| `positions_raw` | Car position data (x, y, z coordinates) |
+| `weather_raw` | Weather time series (temperature, humidity, wind, rainfall) |
+| `race_control_raw` | Race control messages and flags |
+| `circuit_info` | Corner locations with angles and distances |
+| `results_raw` | Driver/team results, grid and finish positions |
+
+### Silver Layer (`data/lake/silver/`)
+
+Enriched, analytics-ready features:
+
+| Table | Key Features |
+|-------|-------------|
+| `laps_featured` | Tyre age, fuel proxy, track status categorization, weather joins, deltas to best/PB |
+| `gaps_featured` | Gap to ahead/behind, clean air flag, DRS range, under pressure flag |
+| `segments_featured` | Per-segment speed stats, throttle/brake usage, entry/exit speeds |
+| `domain1/` | Clean-air stints, degradation curves, stint summaries |
 
 ## 🔧 Command Reference
 
-### Ingestion Scripts
-
-#### `ingest_session.py`
-
-Ingest a single F1 session.
+### Ingestion
 
 ```bash
-python -m src.ingest.ingest_session \
-  --year 2023 \
-  --gp "Monza" \
-  --session R \
-  [--force] \
-  [--db path/to/raw.db]
+# Single session
+python -m src.ingest.ingest_parquet \
+  --year 2023 --gp "Monza" --session R [--force] [--lake path/to/lake]
+
+# Batch (background)
+python -m src.ingest.background_runner start \
+  --year 2023 [--gps "Monza,Spa"] [--sessions "Q,R"] [--workers 4]
+
+# Job management
+python -m src.ingest.background_runner status [--job-id JOB_ID]
+python -m src.ingest.background_runner logs --job-id JOB_ID
+python -m src.ingest.background_runner cancel --job-id JOB_ID
 ```
 
-**Options:**
-- `--year, -y`: Season year (required)
-- `--gp, -g`: Grand Prix name (required)
-- `--session, -s`: Session type - FP1, FP2, FP3, Q, S, R (required)
-- `--force, -f`: Force re-ingestion if session exists
-- `--db`: Custom database path
-
-#### `ingest_season.py`
-
-Batch ingest multiple sessions for a season.
+### Feature Engineering
 
 ```bash
-python -m src.ingest.ingest_season \
-  --year 2023 \
-  [--gps "Monza,Silverstone"] \
-  [--sessions "Q,R"] \
-  [--force] \
-  [--db path/to/raw.db]
+# DuckDB-based features (fast, SQL-driven)
+python -m src.features.duckdb_features all
+python -m src.features.duckdb_features laps [--session SESSION_ID]
+python -m src.features.duckdb_features gaps [--session SESSION_ID]
+python -m src.features.duckdb_features segments [--session SESSION_ID] [--segments 20]
+
+# Ad-hoc SQL query on the data lake
+python -m src.features.duckdb_features query --sql "SELECT * FROM laps_raw LIMIT 10"
 ```
 
-**Options:**
-- `--year, -y`: Season year (required)
-- `--gps, -g`: Comma-separated GP names (omit for all GPs)
-- `--sessions, -s`: Comma-separated session types (omit for FP1,FP2,FP3,Q,R)
-- `--force, -f`: Force re-ingestion
-- `--db`: Custom database path
-
-### Feature Building Scripts
-
-#### `build_laps_featured.py`
-
-Build enhanced lap features.
+### Domain 1: Tyre Degradation
 
 ```bash
-python -m src.features.build_laps_featured \
-  [--session-id 1] \
-  [--raw-db path/to/raw.db] \
-  [--features-db path/to/features_core.db]
+python -m src.features.domain1_degradation build [--year 2023] [--no-save]
+python -m src.features.domain1_degradation stats
 ```
-
-**Options:**
-- `--session-id, -s`: Process specific session only
-- `--raw-db`: Path to raw database
-- `--features-db`: Path to features database
-
-#### `build_gaps_featured.py`
-
-Build gap analysis features.
-
-```bash
-python -m src.features.build_gaps_featured \
-  [--session-id 1] \
-  [--raw-db path/to/raw.db] \
-  [--features-db path/to/features_core.db]
-```
-
-#### `build_segments_featured.py`
-
-Build segment-level telemetry features.
-
-```bash
-python -m src.features.build_segments_featured \
-  [--session-id 1] \
-  [--segments 20] \
-  [--raw-db path/to/raw.db] \
-  [--features-db path/to/features_core.db]
-```
-
-**Options:**
-- `--segments, -n`: Number of segments per lap (default: 20)
 
 ## 📝 Usage Examples
 
-### Example 1: Complete 2023 Season Analysis
+### Example 1: Complete Season Analysis
 
 ```bash
 # Step 1: Ingest all 2023 race and qualifying data
-python -m src.ingest.ingest_season --year 2023 --sessions "Q,R"
+python -m src.ingest.background_runner start --year 2023 --sessions "Q,R"
 
 # Step 2: Build all feature tables
-python -m src.features.build_laps_featured
-python -m src.features.build_gaps_featured
-python -m src.features.build_segments_featured
+python -m src.features.duckdb_features all
 
-# Now your databases are ready for analysis!
+# Step 3: Build degradation analysis
+python -m src.features.domain1_degradation build --year 2023
 ```
 
-### Example 2: Quick Single Race Analysis
-
-```bash
-# Ingest Monaco 2023 race
-python -m src.ingest.ingest_session --year 2023 --gp "Monaco" --session R
-
-# Build features for this session only
-python -m src.features.build_laps_featured --session-id 1
-python -m src.features.build_gaps_featured --session-id 1
-python -m src.features.build_segments_featured --session-id 1
-```
-
-### Example 3: Analyze Specific Tracks
-
-```bash
-# Compare street circuits from 2023
-python -m src.ingest.ingest_season \
-  --year 2023 \
-  --gps "Monaco,Singapore,Las Vegas" \
-  --sessions "Q,R"
-
-python -m src.features.build_laps_featured
-python -m src.features.build_gaps_featured
-```
-
-## 🔍 Querying the Data
-
-### SQLite CLI
-
-```bash
-# Open raw database
-sqlite3 data/raw.db
-
-# Example queries
-sqlite> SELECT year, gp_name, session_type, COUNT(*) as lap_count 
-        FROM sessions s 
-        JOIN laps_raw l ON s.session_id = l.session_id 
-        GROUP BY s.session_id;
-
-# Open features database
-sqlite3 data/features_core.db
-
-# Example: Find laps in clean air with soft tyres
-sqlite> SELECT driver, lap_number, lap_time_s, compound, tyre_age_laps
-        FROM laps_featured
-        WHERE compound = 'SOFT' 
-        AND session_id IN (
-            SELECT session_id FROM gaps_featured 
-            WHERE in_clean_air = 1
-        );
-```
-
-### Python
+### Example 2: Query with DuckDB
 
 ```python
-import sqlite3
+import duckdb
+conn = duckdb.connect()
 
-# Connect to databases
-raw_conn = sqlite3.connect('data/raw.db')
-features_conn = sqlite3.connect('data/features_core.db')
-
-# Query featured laps
-query = """
-SELECT driver, lap_number, lap_time_s, compound, tyre_age_laps, fuel_proxy
-FROM laps_featured
-WHERE session_id = 1
-ORDER BY lap_time_s
-LIMIT 10
-"""
-
-import pandas as pd
-df = pd.read_sql_query(query, features_conn)
+# Read directly from Parquet
+df = conn.execute("""
+    SELECT driver, compound, AVG(lap_time_ms/1000.0) as avg_lap
+    FROM read_parquet('data/lake/bronze/laps_raw/**/data.parquet', hive_partitioning=true)
+    WHERE year = 2023 AND gp = 'Monaco_Grand_Prix' AND session = 'R'
+    GROUP BY driver, compound
+    ORDER BY avg_lap
+""").fetchdf()
 print(df)
 ```
 
-### Attaching Multiple Databases
+### Example 3: Query Silver Layer
 
 ```python
-import sqlite3
+import pandas as pd
 
-conn = sqlite3.connect('data/features_core.db')
-conn.execute("ATTACH 'data/raw.db' AS raw;")
+# Read featured laps
+laps = pd.read_parquet('data/lake/silver/laps_featured/')
+print(laps.head())
 
-# Now you can query both databases
-query = """
-SELECT 
-    f.driver,
-    f.lap_number,
-    f.lap_time_s,
-    f.compound,
-    r.track_status
-FROM laps_featured f
-JOIN raw.laps_raw r 
-    ON f.session_id = r.session_id 
-    AND f.driver = r.driver 
-    AND f.lap_number = r.lap_number
-WHERE f.session_id = 1
-"""
+# Read degradation stints
+stints = pd.read_parquet('data/lake/silver/domain1/stints_degradation.parquet')
+print(stints.describe())
 ```
 
 ## 🏗️ Project Structure
 
 ```
 f1-strategy/
-├── data/                      # SQLite databases (gitignored)
-│   ├── raw.db
-│   ├── features_core.db
-│   ├── features_tyre.db
-│   ├── features_traffic.db
-│   └── features_xt.db
+├── data/
+│   ├── lake/                  # Parquet data lake (gitignored)
+│   │   ├── bronze/            # Raw ingested data
+│   │   └── silver/            # Derived features
+│   ├── models/                # Trained ML models
+│   └── jobs/                  # Background job tracking
 ├── src/
-│   ├── ingest/               # Data ingestion modules
-│   │   ├── ingest_session.py
-│   │   └── ingest_season.py
-│   ├── features/             # Feature engineering modules
-│   │   ├── build_laps_featured.py
-│   │   ├── build_gaps_featured.py
-│   │   └── build_segments_featured.py
-│   └── utils/                # Shared utilities
-│       ├── db.py
-│       ├── logging_utils.py
-│       ├── fastf1_utils.py
-│       └── schemas.py
-├── notebooks/                 # (Reserved for analysis notebooks)
+│   ├── ingest/                # Data ingestion
+│   │   ├── ingest_parquet.py  # Single session → Parquet
+│   │   └── background_runner.py # Batch/parallel ingestion
+│   ├── features/              # Feature engineering
+│   │   ├── duckdb_features.py # DuckDB SQL feature builder
+│   │   └── domain1_degradation.py # Tyre degradation pipeline
+│   ├── models/                # ML modeling
+│   │   ├── degradation_model.py # XGBoost degradation model
+│   │   └── feature_builder.py # Feature construction for ML
+│   └── utils/                 # Shared utilities
+│       ├── db.py              # Database connection helpers
+│       ├── fastf1_utils.py    # FastF1 API wrappers
+│       ├── logging_utils.py   # Logging setup
+│       ├── parquet_writer.py  # Parquet read/write
+│       └── schemas.py         # SQLite DDL definitions
+├── notebooks/                 # Jupyter analysis notebooks
+├── tests/                     # Unit tests
+├── docs/                      # Documentation (see docs/README.md)
+│   ├── roadmaps/              #   Project plans & research roadmaps
+│   ├── reports/               #   Analysis results & write-ups
+│   └── figures/               #   Generated plots & diagrams
 ├── cache/                     # FastF1 cache (gitignored)
+├── scripts/                   # Utility scripts
+│   └── init_databases.py      # SQLite DB initialization
 ├── requirements.txt
 ├── pyproject.toml
-└── README.md
+└── ARCHITECTURE.md
 ```
 
 ## 🎯 Design Principles
 
-1. **Idempotent**: Re-run scripts safely without duplicating data
-2. **Modular**: Clear separation between ingestion and feature engineering
-3. **Efficient**: Chunked inserts, proper indexing, optimized SQLite settings
-4. **Layered**: Bronze (raw) → Silver (features) architecture
-5. **Auditable**: Ingestion logs track all operations
-6. **Extensible**: Easy to add new feature tables and domain-specific databases
+1. **Idempotent**: Re-run scripts safely — existing data is skipped unless `--force`
+2. **Modular**: Clear separation: ingestion → features → domain analysis → ML
+3. **Fast**: DuckDB SQL on Parquet for feature engineering (~100x vs Python loops)
+4. **Layered**: Bronze (raw) → Silver (features) data lake architecture
+5. **Extensible**: Easy to add new domains (traffic, strategy, etc.)
 
 ## 📚 Key Concepts
 
-### Tyre Age Calculation
-
-Tyre age is computed as the number of laps since the start of the current stint:
-
-```python
+### Tyre Age
+```
 tyre_age_laps = lap_number - first_lap_of_stint + 1
 ```
 
 ### Fuel Proxy
-
-Fuel proxy estimates fuel load as a fraction of race completion:
-
-```python
-fuel_proxy = lap_number / total_race_laps
+```
+fuel_proxy = lap_number / total_race_laps  (0.0 = full tank, 1.0 = empty)
 ```
 
-Lower values = heavier car (more fuel), higher values = lighter car (less fuel)
-
 ### Track Status Categories
-
-Raw FastF1 track status codes are categorized:
-
 - **GREEN**: Normal racing (status '1')
 - **YELLOW**: Yellow flags (status '2')
 - **SC**: Safety Car (status '4')
 - **VSC**: Virtual Safety Car (status '6')
 - **RED**: Red flag (status '5')
-- **UNKNOWN**: Other statuses
 
-### Gap Computation
+### Clean Air & DRS
+- **Clean air**: gap to car ahead > 2.5s
+- **DRS range**: gap to car ahead < 1.0s
 
-Gaps between cars are computed using cumulative lap times and race positions:
-
-```python
-gap_to_ahead = current_driver_cumulative_time - ahead_driver_cumulative_time
-```
-
-## 🧠 Train Tyre Degradation Model
-
-Train a supervised model to predict stint-level degradation rate (seconds per lap) from Silver-layer Domain 1 data.
-
-Prerequisites:
-- Build Domain 1 data so that `data/lake/silver/domain1/stints_degradation.parquet` exists (see domain1 ETL module).
-
-Commands:
-
-```bash
-# Show CLI options
-python -m src.modeling.train_degradation_model --help
-
-# Train with defaults (uses data/lake)
-python -m src.modeling.train_degradation_model train
-
-# Optional: specify explicit paths
-python -m src.modeling.train_degradation_model train \
-  --stints-path data/lake/silver/domain1/stints_degradation.parquet \
-  --cluster-labels-path data/clustering_labels.parquet
-```
-
-Outputs:
-- Models: `models/degradation/degradation_p50.joblib` (+ optional `degradation_p10.joblib`, `degradation_p90.joblib`)
-- Metrics: `models/degradation/metrics.json`
-```
+### Degradation Rate
+Fuel-corrected linear slope of lap_time vs tyre_age in clean-air stints.
 
 ## 🤝 Contributing
 
 Contributions welcome! Areas for enhancement:
-
-- Add more feature engineering modules
-- Implement domain-specific feature databases (tyre, traffic, etc.)
-- Add data validation and quality checks
-- Optimize telemetry segment matching
-- Add visualization utilities
+- Domain 2: Traffic impact analysis
+- Domain 3: Race strategy simulation
+- Data validation and quality checks
+- Visualization dashboards
 
 ## 📄 License
 
-MIT License - see LICENSE file for details
+MIT License — see LICENSE file for details.
 
 ## 🙏 Acknowledgments
 
-- [FastF1](https://github.com/theOehrly/Fast-F1) - Excellent F1 data access library
-- Formula 1 - For making timing data available
+- [FastF1](https://github.com/theOehrly/Fast-F1) — Excellent F1 data access library
+- Formula 1 — For making timing data available

@@ -11,18 +11,13 @@ import pandas as pd
 import typer
 from rich.console import Console
 
-from src.utils.db import DatabaseManager
 from src.utils.logging_utils import setup_logger, log_ingestion_status
 from src.utils.fastf1_utils import get_session_safely, load_session_safely, normalize_session_type
-from src.utils.schemas import initialize_raw_db
 from src.utils.parquet_writer import ParquetWriter, DATA_LAKE_PATH
 
 app = typer.Typer()
 console = Console()
 logger = setup_logger(__name__)
-
-# Default paths
-DB_PATH = Path(__file__).parent.parent.parent / "data" / "raw.db"
 
 
 def prepare_laps_df(session, session_id: int, year: int, gp_name: str, session_type: str) -> pd.DataFrame:
@@ -425,8 +420,6 @@ def ingest_session_parquet(
     session_type: str,
     force: bool = False,
     lake_path: Path = DATA_LAKE_PATH,
-    also_sqlite: bool = False,
-    db_path: Path = DB_PATH
 ) -> Tuple[bool, str]:
     """Ingest a single F1 session to Parquet Bronze layer.
     
@@ -436,8 +429,6 @@ def ingest_session_parquet(
         session_type: Session type (FP1, FP2, FP3, Q, S, R)
         force: Force re-ingestion if exists
         lake_path: Path to data lake
-        also_sqlite: Also write to SQLite (backward compat)
-        db_path: Path to SQLite database
         
     Returns:
         Tuple of (success: bool, message: str)
@@ -506,14 +497,6 @@ def ingest_session_parquet(
         writer.write_bronze(results_df, "results_raw", year, gp_name, session_type)
         counts['results'] = len(results_df)
     
-    # Optionally also write to SQLite
-    if also_sqlite:
-        from src.ingest.ingest_session import ingest_session
-        try:
-            ingest_session(year, gp_name, session_type, force, db_path)
-        except Exception as e:
-            logger.warning(f"SQLite write failed (Parquet succeeded): {e}")
-    
     message = f"Ingested: {counts}"
     log_ingestion_status(logger, session_info, 'success', message)
     return True, message
@@ -526,14 +509,13 @@ def main(
     session_type: str = typer.Option(..., "--session", "-s", help="Session type"),
     force: bool = typer.Option(False, "--force", "-f", help="Force re-ingestion"),
     lake_path: str = typer.Option(str(DATA_LAKE_PATH), "--lake", help="Data lake path"),
-    also_sqlite: bool = typer.Option(False, "--sqlite", help="Also write to SQLite"),
 ):
     """Ingest a single F1 session to Parquet Bronze layer."""
     console.print(f"[bold blue]Ingesting {year} {gp_name} {session_type} to Parquet[/bold blue]")
     session_type = normalize_session_type(session_type)
     
     success, message = ingest_session_parquet(
-        year, gp_name, session_type, force, Path(lake_path), also_sqlite
+        year, gp_name, session_type, force, Path(lake_path)
     )
     
     if success:

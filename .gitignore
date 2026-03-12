@@ -1,22 +1,18 @@
-# Database files
-*.db
-*.db-journal
-*.db-wal
-*.db-shm
-
-# FastF1 cache
-cache/
-.fastf1/
-
-# Python
+# ========== Python ==========
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
+*.egg-info/
+*.egg
+.installed.cfg
+MANIFEST
+
+# ========== Build / Distribution ==========
 build/
-develop-eggs/
 dist/
+develop-eggs/
 downloads/
 eggs/
 .eggs/
@@ -28,18 +24,19 @@ var/
 wheels/
 pip-wheel-metadata/
 share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
 
-# Virtual Environment
+# ========== Virtual Environments ==========
+.venv/
 venv/
 ENV/
 env/
-.venv/
 
-# IDE
+# ========== Data (generated at runtime) ==========
+data/
+cache/
+.fastf1/
+
+# ========== IDE ==========
 .vscode/
 .idea/
 *.swp
@@ -47,23 +44,19 @@ env/
 *~
 .DS_Store
 
-# Jupyter Notebook
-.ipynb_checkpoints
-*.ipynb
+# ========== Jupyter ==========
+.ipynb_checkpoints/
 
-# Testing
+# ========== Testing ==========
 .pytest_cache/
 .coverage
 htmlcov/
 .tox/
 
-# Logs
+# ========== Logs ==========
 *.log
 logs/
 
-# Temporary files
+# ========== Temp ==========
 /tmp/
 *.tmp
-
-# Data files
-data/

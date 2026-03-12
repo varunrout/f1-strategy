@@ -1,32 +1,55 @@
 # F1 Strategy Analysis Notebooks
 
-This directory is reserved for Jupyter notebooks for data analysis and visualization.
+## Notebooks (run in order)
 
-## Suggested Notebooks
+| # | Notebook | Purpose |
+|---|----------|---------|
+| 01 | `01_data_exploration.ipynb` | Explore bronze/silver data, schema checks, basic distributions |
+| 02 | `02_domain1_analysis.ipynb` | Tyre degradation EDA — stint extraction, curve fitting, factor analysis |
+| 03 | `03_domain1_cluster_analysis.ipynb` | Cluster stints by driving style & track regime |
+| 04 | `04_domain1_modeling.ipynb` | XGBoost degradation prediction model — train, evaluate, visualise |
 
-- `01_data_exploration.ipynb` - Explore raw and featured data
-- `02_lap_time_analysis.ipynb` - Analyze lap time distributions
-- `03_tyre_degradation.ipynb` - Study tyre wear patterns
-- `04_gap_analysis.ipynb` - Analyze gaps and overtaking opportunities
-- `05_segment_analysis.ipynb` - Track segment performance comparison
+## Prerequisites
+
+```bash
+# Install project deps (from repo root)
+pip install -r requirements.txt
+
+# Ingest at least one season
+python -m src.ingest.ingest_parquet --year 2023 --gp "Monaco" --session R
+
+# Build feature tables
+python -m src.features.duckdb_features all
+
+# Build degradation stints (needed for notebooks 02-04)
+python -m src.features.domain1_degradation build
+```
+
+## Figure Output Convention
+
+Notebooks save publication-quality figures to `docs/figures/<analysis_name>/`, not into this directory. Each notebook defines a `FIGURES_DIR` or `plots_dir` constant pointing there:
+
+| Notebook | Figures saved to |
+|----------|-----------------|
+| 01 | *(inline only — no saved figures)* |
+| 02 | *(inline only — no saved figures)* |
+| 03 | `docs/figures/domain1_clustering/` |
+| 04 | `docs/figures/domain1_modeling/` |
+
+**Rule**: No `.png`, `.csv`, or `.parquet` files should live in `notebooks/`.
 
 ## Getting Started
 
 ```python
-import sqlite3
+import duckdb
 import pandas as pd
-import matplotlib.pyplot as plt
 
-# Connect to databases
-raw_conn = sqlite3.connect('../data/raw.db')
-features_conn = sqlite3.connect('../data/features_core.db')
+# Query silver-layer Parquet directly
+con = duckdb.connect()
+laps = con.execute("""
+    SELECT * FROM read_parquet('data/lake/silver/laps_featured/**/*.parquet')
+    LIMIT 1000
+""").df()
 
-# Example: Load featured laps
-laps_df = pd.read_sql_query("""
-    SELECT * FROM laps_featured
-    WHERE session_id = 1
-""", features_conn)
-
-# Analyze
-print(laps_df.head())
+laps.head()
 ```

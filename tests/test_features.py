@@ -1,6 +1,6 @@
 """Tests for feature building - track status categorization."""
 import pytest
-from src.features.build_laps_featured import categorize_track_status
+from src.features import categorize_track_status
 
 
 def test_categorize_track_status():
