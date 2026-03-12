@@ -176,8 +176,8 @@ def detect_proximity_events(
         # Keep one row per driver per time bin (nearest to bin centre)
         binned_rows = []
         for (t_bin, driver), grp in frame.groupby(["time_bin", "driver"]):
-            best_loc = (grp["time_s"] - t_bin).abs().argmin()
-            binned_rows.append(grp.iloc[[best_loc]])
+            best_idx = (grp["time_s"] - t_bin).abs().idxmin()
+            binned_rows.append(grp.loc[[best_idx]])
 
         if not binned_rows:
             continue
@@ -196,8 +196,11 @@ def detect_proximity_events(
 
             for i, j in pairs:
                 dist = float(np.linalg.norm(coords[i] - coords[j]))
-                # Use y-coordinate as a proxy for track progression (higher y = further ahead).
-                # This is a simplification; for production use track distance / lap progress.
+                # NOTE: Using y-coordinate as a heuristic proxy for track progression.
+                # This approximation holds on many F1 circuits but is not universally
+                # correct (e.g. Monaco's hairpin, circuits with large y-reversals).
+                # For production-grade use, replace with lap_distance or
+                # normalised track position from FastF1's `get_track_corners()`.
                 y_i, y_j = coords[i][1], coords[j][1]
                 if y_i >= y_j:
                     ahead_idx, behind_idx = i, j

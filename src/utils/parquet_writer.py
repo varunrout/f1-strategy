@@ -20,6 +20,8 @@ class ParquetWriter:
     def write_bronze(self, df: pd.DataFrame, table: str, year: int, gp_name: str,
                      session_type: str, compression: CompressionType = "zstd") -> Path:
         """Write DataFrame to Bronze layer (raw data)."""
+        if not isinstance(gp_name, str):
+            raise TypeError(f"gp_name must be a string, got {type(gp_name).__name__}")
         gp_safe = gp_name.replace(" ", "_").replace("/", "_")
         partition_path = (
             self.base_path / "bronze" / table /
