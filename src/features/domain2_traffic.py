@@ -44,6 +44,9 @@ TRAFFIC_REGIMES = [
     "CLOSE_FOLLOWING",
 ]
 
+# Gap threshold below which an overtake is classified as late-braking
+LATE_BRAKING_GAP_S = 0.3
+
 
 # ---------------------------------------------------------------------------
 # Job 1 — Build lap positions
@@ -107,7 +110,16 @@ def build_lap_positions(
 
 
 def _derive_lap_times(laps: pd.DataFrame) -> pd.DataFrame:
-    """Derive lap_start_time_s and lap_end_time_s from cumulative lap times."""
+    """Derive lap_start_time_s and lap_end_time_s from cumulative lap times.
+
+    Args:
+        laps: DataFrame with columns [session_id, driver, lap_number] and
+            either lap_time_s (seconds) or lap_time_ms (milliseconds).
+            When neither column is present, lap boundaries are set to NaN.
+
+    Returns:
+        laps with lap_start_time_s and lap_end_time_s columns added.
+    """
     laps = laps.copy().sort_values(["session_id", "driver", "lap_number"])
 
     lap_time_col = None
@@ -164,8 +176,8 @@ def detect_proximity_events(
         # Keep one row per driver per time bin (nearest to bin centre)
         binned_rows = []
         for (t_bin, driver), grp in frame.groupby(["time_bin", "driver"]):
-            best = grp.iloc[(grp["time_s"] - t_bin).abs().argsort()[:1]]
-            binned_rows.append(best)
+            best_loc = (grp["time_s"] - t_bin).abs().argmin()
+            binned_rows.append(grp.iloc[[best_loc]])
 
         if not binned_rows:
             continue
@@ -397,7 +409,7 @@ def detect_overtakes(
         ] = "DRS_ASSISTED"
     if "gap_to_ahead_s" in overtakes.columns:
         overtakes.loc[
-            (overtakes["gap_to_ahead_s"] < 0.3) &
+            (overtakes["gap_to_ahead_s"] < LATE_BRAKING_GAP_S) &
             (overtakes["overtake_type"] == "TRACK"),
             "overtake_type",
         ] = "LATE_BRAKING"
@@ -510,7 +522,8 @@ def map_track_bottlenecks(
         how="left",
         suffixes=("", "_pos"),
     )
-    merged["time_diff"] = (merged["time_s"] - merged["time_s_pos"]).abs()
+    merged.rename(columns={"time_s_pos": "pos_time_s"}, inplace=True)
+    merged["time_diff"] = (merged["time_s"] - merged["pos_time_s"]).abs()
     merged = (
         merged.sort_values("time_diff")
         .groupby(["session_id", "driver_behind", "time_s"])
