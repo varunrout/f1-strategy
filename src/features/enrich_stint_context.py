@@ -264,9 +264,8 @@ def enrich_with_fuel_load(stints_df: pd.DataFrame) -> pd.DataFrame:
     """
     result = stints_df.copy()
 
-    # Determine stint start lap (use stint_id as a proxy when lap number unavailable)
-    # Determine stint start lap from LapNumber (more accurate than stint_id).
-    # Fallback to round_number-based estimate when lap numbers are unavailable.
+    # Determine stint start lap from LapNumber when available; fall back to a
+    # round_number-based estimate when lap numbers are absent.
     if "LapNumber" in result.columns:
         # Use the minimum LapNumber per stint as the race lap at stint start.
         start_lap_col = "stint_start_lap"
